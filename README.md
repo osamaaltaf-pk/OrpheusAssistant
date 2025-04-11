@@ -1,4 +1,4 @@
-# Orpheus-
+# Orpheus- Consider the 4_11_25_Version2.py file
 Canopyai Orpheus &amp; LMStudio: 100% Uncensored Private Offline chat 
 
 https://youtu.be/HYmszx3jO5g
