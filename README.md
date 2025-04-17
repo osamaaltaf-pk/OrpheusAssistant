@@ -2,6 +2,8 @@
 
 # Advanced Dev? --- try the real-time version RT_Orpheus_Gradio.py
 
+Real-time demo and code walk:  https://youtu.be/QjfcbqCfyfM
+
 Canopyai Orpheus &amp; LMStudio: 100% Uncensored Private Offline chat 
 
 Current 4_11_25_Version2.py code walk:  https://youtu.be/80PlrvhpMzI
