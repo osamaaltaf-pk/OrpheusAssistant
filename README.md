@@ -1,4 +1,6 @@
-# Orpheus- Consider the 4_11_25_Version2.py file
+# Orpheus - Consider the 4_11_25_Version2.py file
+
+# Advaced USer? --- they the RT_Orpheus_Gradio.py
 Canopyai Orpheus &amp; LMStudio: 100% Uncensored Private Offline chat 
 
 Current 4_11_25_Version2.py code walk:  https://youtu.be/80PlrvhpMzI
