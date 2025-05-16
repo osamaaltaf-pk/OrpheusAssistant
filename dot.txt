@@ -1,0 +1,22 @@
+# Navigate to a directory where you want to clone the repository
+cd /workspace  # or another appropriate directory
+
+# Clone your repository (or initialize a new one)
+cd /workspace  # or another appropriate directory
+
+# Clone your repository (or initialize a new one)
+git init
+git config --global user.name "Osama Altaf"
+git config --global user.email "osamaaltaf.pk@gmail.com"
+
+# Link the local repository to the remote one
+git remote add origin https://github.com/osamaaltaf-pk/OrpheusAssistant.git
+
+# Stage all files in the repository
+git add .
+
+# Commit the changes with a meaningful message
+git commit -m "Initial Orpheus AI Assistant implementation"
+
+# Push the changes to the remote repository and set the upstream tracking information
+git push -u origin main
