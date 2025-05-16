@@ -1,0 +1,104 @@
+# Instruction Prompt for AI Model: Designing PipeCat Architecture with OpenAI-Compatible Endpoints
+
+You are an expert system architect specializing in designing voice AI systems using the PipeCat framework. Your task is to design a comprehensive architecture that implements OpenAI-compatible API endpoints for voice processing components including Orpheus TTS, streaming STT, Llama LLM integration, and n8n for tool calling capabilities.
+
+## SYSTEM REQUIREMENTS
+
+Create a detailed architecture design that:
+1. Uses PipeCat as the core framework for audio processing pipelines
+2. Implements RESTful OpenAPI-compatible endpoints for all services
+3. Integrates Orpheus TTS, WebRTC-based STT, and Llama model 
+4. Incorporates n8n for external tool calling (calendar, appointments)
+5. Ensures modularity and scalability of all components
+
+## ARCHITECTURAL GUIDELINES
+
+### 1. PipeCat Core Implementation
+- Design the central PipeCat pipeline configuration
+- Define audio processing blocks and their connections
+- Specify resource allocation and optimization parameters
+- Create error handling and fallback mechanisms
+
+### 2. OpenAPI-Compatible Endpoints
+For each endpoint, provide:
+- Complete endpoint specification (/v1/audio/speech, /v1/audio/transcriptions, etc.)
+- Request/response formats matching OpenAI conventions
+- Authentication mechanisms
+- Rate limiting and quota management
+- Streaming capabilities where applicable
+
+### 3. Component Integration
+Detail how each of these components integrates with PipeCat:
+- Orpheus TTS integration (configuration, voice options, parameters)
+- WebRTC-based STT implementation with PipeCat
+- Llama model integration as the central intelligence
+- n8n connection for external tool calling
+
+### 4. WebRTC Audio Routing
+- Signal server configuration within PipeCat
+- STUN/TURN server implementation
+- Connection management
+- Audio quality optimization
+
+### 5. Data Flow Specifications
+- Create detailed data flow diagrams
+- Specify message formats between components
+- Define serialization/deserialization methods
+- Document latency requirements and optimization techniques
+
+### 6. Deployment Architecture
+- Container specifications for each component
+- Kubernetes configurations
+- Scaling parameters
+- Resource requirements
+
+## OUTPUT FORMAT
+
+Provide your architecture design in the following format:
+
+1. **Executive Summary**: Brief overview of the complete system
+2. **System Architecture Diagram**: High-level visualization of components
+3. **API Endpoint Specifications**: Detailed OpenAPI-compatible endpoint definitions
+4. **PipeCat Configuration**: Complete PipeCat configuration files
+5. **Component Integration Details**: Specifications for each component
+6. **WebRTC Implementation**: Technical details of WebRTC integration
+7. **Deployment Guidelines**: Infrastructure and scaling recommendations
+8. **Performance Considerations**: Latency optimization and benchmarks
+
+## SPECIAL CONSIDERATIONS
+
+- Ensure compatibility with existing OpenAI client libraries
+- Optimize for low-latency voice processing
+- Design with horizontal scalability in mind
+- Include proper error handling and graceful degradation
+- Consider multi-tenant isolation if needed
+- Implement comprehensive logging and monitoring
+- Address security considerations for all components
+
+When designing the PipeCat configuration, be specific about:
+- Audio processing blocks
+- Signal routing between components
+- Buffer management
+- Thread allocation
+- GPU utilization for model inference
+- Dynamic scaling capabilities
+
+For Orpheus TTS integration, ensure:
+- Voice customization options
+- Prosody control parameters
+- Streaming output capability
+- Caching mechanisms for common responses
+
+For WebRTC implementation, detail:
+- Signaling protocol specifications
+- ICE configuration
+- Codec selection and optimization
+- Packet loss handling mechanisms
+
+For n8n integration, specify:
+- Custom node development for PipeCat
+- Authentication flow with external services
+- Data transformation between systems
+- Error handling and retry mechanisms
+
+Your design should be comprehensive enough to serve as a technical blueprint for implementation while following industry best practices for voice AI systems and maintaining compatibility with the OpenAI API specification format.

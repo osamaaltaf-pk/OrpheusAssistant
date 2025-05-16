@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  orpheus-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "7860:7860"  # Gradio web interface
+      - "8765:8765"  # WebRTC signaling server
+    environment:
+      - SERVER_BASE_URL=${SERVER_BASE_URL:-http://lmstudio:1234}
+      - N8N_BASE_URL=${N8N_BASE_URL:-http://n8n:5678}
+      - N8N_API_KEY=${N8N_API_KEY:-orpheus_n8n_key}
+      - WHISPER_MODEL_NAME=${WHISPER_MODEL_NAME:-large}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-meta-llama/Llama-3.2-3B-Instruct}
+      - TTS_MODEL=${TTS_MODEL:-isaiahbjork/orpheus-3b-4bit-quant}
+    volumes:
+      - ./models:/app/models  # Persist model downloads
+    depends_on:
+      - n8n
+      - lmstudio
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_HOST=localhost
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-orpheus_admin}
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  lmstudio:
+    image: lmstudio/lmstudio-server:latest  # This is a placeholder - substitute with your actual LM Studio Server image
+    restart: unless-stopped
+    ports:
+      - "1234:1234"
+    volumes:
+      - lmstudio_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./coturn:/etc/coturn
+    command: >
+      -n --log-file=stdout
+      --min-port=49160 --max-port=49200
+      --lt-cred-mech --fingerprint
+      --no-cli --no-tcp-relay
+      --realm=orpheus.ai
+      --user=orpheus:orpheus_turn_password
+      --external-ip=$(detect-external-ip)
+
+volumes:
+  n8n_data:
+    driver: local
+  lmstudio_data:
+    driver: local 

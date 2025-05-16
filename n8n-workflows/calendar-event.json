@@ -1,0 +1,81 @@
+{
+  "name": "create_calendar_event",
+  "nodes": [
+    {
+      "parameters": {
+        "functionCode": "// Calendar Event creation function\n// Input parameters:\n// - parameters.title: The event title\n// - parameters.start: ISO format start time\n// - parameters.end: ISO format end time\n// - parameters.description: Event description\n\nconst title = parameters.title || 'Untitled Event';\nconst start = parameters.start;\nconst end = parameters.end; \nconst description = parameters.description || '';\n\nif (!start || !end) {\n  throw new Error('Start and end times are required');\n}\n\n// Create calendar event object\nconst event = {\n  title: title,\n  start: new Date(start),\n  end: new Date(end),\n  description: description,\n  created: new Date(),\n  status: 'confirmed',\n  uid: `event-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`\n};\n\n// In a real implementation, this would connect to a calendar service\n// For demo purposes, we'll just return the event details\nreturn {\n  success: true,\n  event: event,\n  message: `Event \"${title}\" created successfully`\n};"
+      },
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.function",
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "calendar/create-event",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        1060,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Create Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  },
+  "tags": [
+    "calendar",
+    "orpheus"
+  ],
+  "pinData": {},
+  "versionId": "9f2f64f2-28b9-4bf6-b9af-21f300e13df8",
+  "id": "1",
+  "meta": {
+    "instanceId": "1a74e1e2bce92611fb56a649b1d3af00a26646bc03844d2d9fc39214b6b1c7f4"
+  }
+} 

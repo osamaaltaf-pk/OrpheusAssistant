@@ -63,9 +63,13 @@ except ImportError:
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "http://127.0.0.1:1234")
 LMSTUDIO_API_ENDPOINT = f"{SERVER_BASE_URL}/v1/chat/completions"
 TTS_API_ENDPOINT = f"{SERVER_BASE_URL}/v1/completions"
-LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL","gemma-3-12b-it") #"hermes-3-llama-3.2-3b-abliterated") #gemma-3-12b-it" "phi-4-mini-instruct" smollm2-1.7b-instruct
-TTS_MODEL = os.getenv("TTS_MODEL", "isaiahbjork/orpheus-3b-0.1-ft") #isaiahbjork/orpheus-3b-0.1-ft") #"orpheus-3b-0.1")
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "base.en")
+LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "meta-llama/Llama-3.2-3B-Instruct") # Using Llama 3.2 3B Instruct
+TTS_MODEL = os.getenv("TTS_MODEL", "isaiahbjork/orpheus-3b-4bit-quant") # Using Orpheus TTS 3b 4 Quant
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "large") # Using Whisper Large model
+
+# --- n8n Configuration ---
+N8N_BASE_URL = os.getenv("N8N_BASE_URL", "http://localhost:5678")
+N8N_API_KEY = os.getenv("N8N_API_KEY", "your_n8n_api_key")
 
 # --- Prompts ---
 LMSTUDIO_SYSTEM_PROMPT = (
@@ -344,23 +348,34 @@ else:
         logger.exception("SNAC warm-up call failed with an exception.")
 
 
-logger.info("Loading Whisper STT model...")
+logger.info(f"Loading Whisper Large model ({WHISPER_MODEL_NAME})...")
 whisper_model: Optional[whisper.Whisper] = None
 try: # Load Whisper
     import warnings
     warnings.filterwarnings("ignore", category=FutureWarning, module="whisper")
     if stt_device == "cpu":
         warnings.filterwarnings("ignore", message=".*FP16 is not supported.*")
-
+    
+    # For large model, we need more memory
+    if stt_device == "cuda":
+        torch.cuda.empty_cache()
+        logger.info("Cleared CUDA cache before loading Whisper Large")
+    
     whisper_model = whisper.load_model(WHISPER_MODEL_NAME, device=stt_device)
-    logger.info(f"Whisper '{WHISPER_MODEL_NAME}' loaded to '{stt_device}'.")
+    logger.info(f"Whisper '{WHISPER_MODEL_NAME}' loaded successfully to '{stt_device}'.")
+    
+    # Warm up Whisper model
+    logger.info("Warming up Whisper model...")
+    dummy_audio = np.zeros((TARGET_SAMPLE_RATE,), dtype=np.float32)
+    whisper_model.transcribe(dummy_audio, language="en")
+    logger.info("Whisper warm-up complete.")
 
 except Exception as e:
-    logger.exception(f"Fatal error loading Whisper.")
+    logger.exception(f"Fatal error loading Whisper: {str(e)}")
     whisper_model = None
 
 if not whisper_model:
-    logger.critical("Whisper model failed. Audio input disabled.")
+    logger.critical("Whisper model failed to load. Audio input disabled.")
 
 
 logger.info("--- Local Model Loading Complete ---")
@@ -389,7 +404,8 @@ def generate_speech_stream(
         logger.error("generate_speech_stream called but snac_model is not loaded.")
         return
 
-    min_codes_required = buffer_groups_param * ORPHEUS_N_LAYERS
+    # Optimize buffer size for 4-bit quantized model
+    min_codes_required = max(buffer_groups_param * ORPHEUS_N_LAYERS, 28)  # Ensure minimum buffer size for stable output
     logger.debug(f"Stream processing: buffer={buffer_groups_param} groups ({min_codes_required} codes), padding={padding_ms_param} ms")
 
     silence_samples: int = 0
@@ -397,47 +413,71 @@ def generate_speech_stream(
         silence_samples = int(TARGET_SAMPLE_RATE * (padding_ms_param / 1000.0))
         logger.debug(f"Calculated silence samples per side: {silence_samples}")
 
+    # Optimized payload for 4-bit quantized model
     payload = {
         "model": TTS_MODEL,
         "prompt": TTS_PROMPT_FORMAT.format(voice=voice, text=text),
-        "temperature": tts_temperature,
-        "top_p": tts_top_p,
-        "repeat_penalty": tts_repetition_penalty,
+        "temperature": max(0.1, min(tts_temperature, 0.9)),  # Clamp temperature for stability
+        "top_p": max(0.1, min(tts_top_p, 0.95)),  # Clamp top_p for stability
+        "repeat_penalty": max(1.0, min(tts_repetition_penalty, 1.3)),  # Clamp repeat penalty
         "n_predict": -1,
         "stop": TTS_PROMPT_STOP_TOKENS,
-        "stream": True
+        "stream": True,
+        "mirostat": 2,  # Enable Mirostat 2.0 sampling for better stability
+        "mirostat_tau": 5.0,  # Target entropy (lower = more focused)
+        "mirostat_eta": 0.1,  # Learning rate
     }
 
     accumulated_codes: List[int] = []
     response = None
     stream_start_time = time.time()
+    last_chunk_time = time.time()
+    chunk_timeout = 10.0  # Timeout for receiving chunks
 
     try:
         logger.info(">>> TTS API: Initiating stream request...")
         with requests.post(
-            TTS_API_ENDPOINT, json=payload, headers=STREAM_HEADERS, stream=True, timeout=STREAM_TIMEOUT_SECONDS
+            TTS_API_ENDPOINT, 
+            json=payload, 
+            headers=STREAM_HEADERS, 
+            stream=True, 
+            timeout=STREAM_TIMEOUT_SECONDS
         ) as response:
             response.raise_for_status()
             logger.info(f"--- TTS API: Stream connected after {time.time() - stream_start_time:.3f}s. Receiving codes...")
 
             for line in response.iter_lines():
+                current_time = time.time()
+                if current_time - last_chunk_time > chunk_timeout:
+                    logger.warning("TTS stream chunk timeout exceeded")
+                    break
+                
                 if not line: continue
-                try: decoded_line = line.decode(response.encoding or 'utf-8')
-                except UnicodeDecodeError: logger.warning(f"Skipping undecodable line: {line[:50]}..."); continue
+                try: 
+                    decoded_line = line.decode(response.encoding or 'utf-8')
+                except UnicodeDecodeError: 
+                    logger.warning(f"Skipping undecodable line: {line[:50]}...")
+                    continue
 
                 if decoded_line.startswith(SSE_DATA_PREFIX):
                     json_str = decoded_line[len(SSE_DATA_PREFIX):].strip()
-                    if json_str == SSE_DONE_MARKER: logger.debug("Received TTS SSE_DONE_MARKER."); break
+                    if json_str == SSE_DONE_MARKER: 
+                        logger.debug("Received TTS SSE_DONE_MARKER.")
+                        break
                     if not json_str: continue
 
                     try:
-                        data = json.loads(json_str); chunk_text = ""
-                        if "content" in data: chunk_text = data.get("content", "")
+                        data = json.loads(json_str)
+                        chunk_text = ""
+                        if "content" in data: 
+                            chunk_text = data.get("content", "")
                         elif "choices" in data and data["choices"]:
-                            choice = data["choices"][0]; delta = choice.get("delta", {});
+                            choice = data["choices"][0]
+                            delta = choice.get("delta", {})
                             chunk_text = delta.get("content", "") or choice.get("text", "")
 
                         if chunk_text:
+                            last_chunk_time = current_time
                             new_codes = parse_gguf_codes(chunk_text)
                             if new_codes:
                                 accumulated_codes.extend(new_codes)
@@ -452,7 +492,8 @@ def generate_speech_stream(
 
                                     if audio_chunk is not None and audio_chunk.size > 0:
                                         logger.debug(f"--- SNAC: Decoded chunk ({len(codes_to_decode)} codes -> {audio_chunk.size} samples) in {snac_end_time - snac_start_time:.3f}s.")
-                                        faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=3)
+                                        # Apply longer fade for smoother transitions
+                                        faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=5)
 
                                         if silence_samples > 0:
                                             silence = np.zeros(silence_samples, dtype=faded_chunk.dtype)
@@ -460,17 +501,24 @@ def generate_speech_stream(
                                         else:
                                             yield (TARGET_SAMPLE_RATE, faded_chunk)
                                     else:
-                                         logger.warning(f"--- SNAC: Failed to decode chunk ({len(codes_to_decode)} codes) in {snac_end_time - snac_start_time:.3f}s.")
+                                        logger.warning(f"--- SNAC: Failed to decode chunk ({len(codes_to_decode)} codes) in {snac_end_time - snac_start_time:.3f}s.")
 
-
-                        stop_reason=None; is_stopped=False
-                        if "choices" in data and data["choices"]: stop_reason=data["choices"][0].get("finish_reason")
+                        stop_reason = None
+                        is_stopped = False
+                        if "choices" in data and data["choices"]:
+                            stop_reason = data["choices"][0].get("finish_reason")
                         if stop_reason or data.get("stop") or data.get("stopped_eos") or data.get("stopped_limit"):
-                            is_stopped=True; logger.debug(f"TTS Stream stop condition met: reason='{stop_reason}', data flags: {data.get('stop')}, {data.get('stopped_eos')}, {data.get('stopped_limit')}")
-                        if is_stopped: break
+                            is_stopped = True
+                            logger.debug(f"TTS Stream stop condition met: reason='{stop_reason}', data flags: {data.get('stop')}, {data.get('stopped_eos')}, {data.get('stopped_limit')}")
+                        if is_stopped: 
+                            break
 
-                    except json.JSONDecodeError: logger.warning(f"Skipping invalid JSON in TTS stream: {json_str[:100]}..."); continue
-                    except Exception as e: logger.exception(f"Error processing TTS stream chunk: {json_str[:100]}..."); continue
+                    except json.JSONDecodeError: 
+                        logger.warning(f"Skipping invalid JSON in TTS stream: {json_str[:100]}...")
+                        continue
+                    except Exception as e: 
+                        logger.exception(f"Error processing TTS stream chunk: {json_str[:100]}...")
+                        continue
 
             # Process remaining codes
             if len(accumulated_codes) >= ORPHEUS_N_LAYERS:
@@ -484,17 +532,16 @@ def generate_speech_stream(
 
                 if audio_chunk is not None and audio_chunk.size > 0:
                     logger.debug(f"--- SNAC: Decoded final chunk ({len(codes_to_decode)} codes -> {audio_chunk.size} samples) in {snac_end_time - snac_start_time:.3f}s.")
-                    faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=3)
+                    faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=5)
                     if silence_samples > 0:
                         silence = np.zeros(silence_samples, dtype=faded_chunk.dtype)
                         yield (TARGET_SAMPLE_RATE, np.concatenate((silence, faded_chunk, silence)))
                     else:
                         yield (TARGET_SAMPLE_RATE, faded_chunk)
                 else:
-                     logger.warning(f"--- SNAC: Failed to decode final chunk ({len(codes_to_decode)} codes) in {snac_end_time - snac_start_time:.3f}s.")
+                    logger.warning(f"--- SNAC: Failed to decode final chunk ({len(codes_to_decode)} codes) in {snac_end_time - snac_start_time:.3f}s.")
             else:
-                 logger.debug(f"Discarding final {len(accumulated_codes)} codes (less than {ORPHEUS_N_LAYERS}).")
-
+                logger.debug(f"Discarding final {len(accumulated_codes)} codes (less than {ORPHEUS_N_LAYERS}).")
 
     except requests.exceptions.RequestException as e:
         logger.exception(f"<<< TTS API: RequestException after {time.time() - stream_start_time:.3f}s.")
@@ -514,6 +561,7 @@ def call_lmstudio_streaming(
 ) -> Generator[str, None, None]:
     """Calls the LLM API for a STREAMING chat response."""
     try:
+        # Optimized parameters for Llama 3.2 3B
         payload = {
             "model": LMSTUDIO_MODEL,
             "messages": lmstudio_payload.get("messages", []),
@@ -521,49 +569,105 @@ def call_lmstudio_streaming(
             "top_p": generation_params.get('lmstudio_top_p', DEFAULT_LMSTUDIO_TOP_P),
             "max_tokens": generation_params.get('lmstudio_max_new_tokens', DEFAULT_LMSTUDIO_MAX_TOKENS),
             "repeat_penalty": generation_params.get('lmstudio_repetition_penalty', DEFAULT_LMSTUDIO_REP_PENALTY),
-            "top_k": generation_params.get('lmstudio_top_k'),
-            "stream": True
+            "top_k": generation_params.get('lmstudio_top_k', DEFAULT_LMSTUDIO_TOP_K),
+            "stream": True,
+            # Additional parameters optimized for Llama
+            "presence_penalty": 0.0,  # Helps with repetition
+            "frequency_penalty": 0.0,  # Helps with repetition
+            "stop": ["</s>", "[/INST]"],  # Llama specific stop tokens
         }
-        if payload.get("max_tokens") == -1: payload["max_tokens"] = None
+        
+        if payload.get("max_tokens") == -1: 
+            payload["max_tokens"] = None
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        logger.debug(f"Initiating LLM stream request to {LMSTUDIO_API_ENDPOINT}")
+        logger.debug(f"Initiating LLM stream request to {LMSTUDIO_API_ENDPOINT} with model {LMSTUDIO_MODEL}")
         with requests.post(
-            LMSTUDIO_API_ENDPOINT, json=payload, headers=STREAM_HEADERS, stream=True, timeout=STREAM_TIMEOUT_SECONDS
+            LMSTUDIO_API_ENDPOINT, 
+            json=payload, 
+            headers=STREAM_HEADERS, 
+            stream=True, 
+            timeout=STREAM_TIMEOUT_SECONDS
         ) as response:
             response.raise_for_status()
             error_occurred = False
+            accumulated_text = ""
+            
             for line in response.iter_lines():
                 if error_occurred: break
                 if not line: continue
-                try: decoded_line = line.decode("utf-8")
-                except UnicodeDecodeError: logger.warning(f"Skipping undecodable line in LLM stream: {line[:50]}..."); continue
+                
+                try: 
+                    decoded_line = line.decode("utf-8")
+                except UnicodeDecodeError: 
+                    logger.warning(f"Skipping undecodable line in LLM stream: {line[:50]}...") 
+                    continue
 
                 if decoded_line.startswith(SSE_DATA_PREFIX):
                     json_str = decoded_line[len(SSE_DATA_PREFIX):].strip()
-                    if json_str == SSE_DONE_MARKER: logger.debug("Received LLM SSE_DONE_MARKER."); break
+                    if json_str == SSE_DONE_MARKER: 
+                        logger.debug("Received LLM SSE_DONE_MARKER.")
+                        break
+                    
                     if not json_str: continue
+                    
                     try:
-                        data = json.loads(json_str); delta_content = None
+                        data = json.loads(json_str)
+                        delta_content = None
+                        
                         if "choices" in data and data["choices"]:
-                            choice = data["choices"][0]; delta = choice.get("delta",{}); delta_content = delta.get("content")
-                        if delta_content is not None: yield delta_content
+                            choice = data["choices"][0]
+                            delta = choice.get("delta",{})
+                            delta_content = delta.get("content")
+                            
+                        if delta_content is not None:
+                            # Clean up Llama specific artifacts
+                            delta_content = delta_content.replace("</s>", "").replace("[/INST]", "")
+                            accumulated_text += delta_content
+                            
+                            # Only yield if we have a meaningful chunk of text
+                            if len(accumulated_text) >= 4 or "." in accumulated_text or "?" in accumulated_text or "!" in accumulated_text:
+                                yield accumulated_text
+                                accumulated_text = ""
+                            
                         elif "error" in data:
                             error_msg = data.get('error', {}).get('message', 'Unknown error')
-                            formatted_error = f"[Error from LLM Stream: {error_msg}]"; logger.error(formatted_error); yield formatted_error; error_occurred = True; break
-                    except json.JSONDecodeError: logger.warning(f"Skipping invalid JSON in LLM stream: {json_str[:100]}..."); continue
-                    except Exception as e: logger.exception(f"Error processing LLM stream chunk: {json_str[:100]}..."); err_yield = f"[Error processing LLM stream: {e}]"; yield err_yield; error_occurred = True; break
+                            formatted_error = f"[Error from LLM Stream: {error_msg}]"
+                            logger.error(formatted_error)
+                            yield formatted_error
+                            error_occurred = True
+                            break
+                            
+                    except json.JSONDecodeError: 
+                        logger.warning(f"Skipping invalid JSON in LLM stream: {json_str[:100]}...")
+                        continue
+                    except Exception as e: 
+                        logger.exception(f"Error processing LLM stream chunk: {json_str[:100]}...")
+                        err_yield = f"[Error processing LLM stream: {e}]"
+                        yield err_yield
+                        error_occurred = True
+                        break
+            
+            # Yield any remaining accumulated text
+            if accumulated_text:
+                yield accumulated_text
+                
     except requests.exceptions.RequestException as e:
         logger.exception("RequestException occurred during LLM stream.")
         err_yield = "[Error connecting to LLM]"
         if hasattr(e, 'response') and e.response is not None:
              logger.error(f"LLM Stream Error Status: {e.response.status_code}, Body: {e.response.text[:500]}")
              try:
-                 err_json=e.response.json(); detail = err_json.get('error',{}).get('message') or err_json.get('detail');
-                 if detail: err_yield = f"[Error from LLM Server: {detail}]"
-             except: pass
+                 err_json=e.response.json()
+                 detail = err_json.get('error',{}).get('message') or err_json.get('detail')
+                 if detail: 
+                     err_yield = f"[Error from LLM Server: {detail}]"
+             except: 
+                 pass
         yield err_yield
-    except Exception as e: logger.exception("Unexpected error in call_lmstudio_streaming."); yield f"[Unexpected Error during LLM stream: {e}]"
+    except Exception as e: 
+        logger.exception("Unexpected error in call_lmstudio_streaming.")
+        yield f"[Unexpected Error during LLM stream: {e}]"
 
 
 # =============================================================================
